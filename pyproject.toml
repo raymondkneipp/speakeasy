@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "speakeasy"
+version = "0.1.0"
+description = "Local-first AI-powered text-to-speech CLI"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "rich>=13.0.0",
+    "sounddevice>=0.4.6",
+    "soundfile>=0.12.1",
+    "nltk>=3.8.1",
+    "requests>=2.31.0",
+    "piper-tts>=1.4.1",
+    "pathvalidate>=3.3.1",
+]
+
+[project.scripts]
+speakeasy = "speakeasy.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["speakeasy"]
+
+[tool.uv]
+dev-dependencies = []
