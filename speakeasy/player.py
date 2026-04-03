@@ -250,7 +250,7 @@ class PlaybackEngine:
                 proc.kill()
                 proc.wait()
                 return True
-            time.sleep(0.05)
+            time.sleep(0.01)
 
         # One final check: a command may have arrived the moment afplay finished
         return not self._cmd_queue.empty()
@@ -304,15 +304,15 @@ class PlaybackEngine:
         with self._lock:
             base = self._idx
 
-        for offset in range(6):  # current + 5 ahead
-            idx = base + offset
-            if idx >= len(self.sentences):
-                break
-
+        generated = 0
+        idx = base
+        while generated < 6 and idx < len(self.sentences):
             text = self.sentences[idx]
+            idx += 1
             if text == PARAGRAPH_BREAK:
-                continue
+                continue  # don't count breaks against the lookahead budget
 
+            generated += 1
             dest = cache_path(text, self.voice, self.speed)
 
             with self._gen_lock:
@@ -325,9 +325,9 @@ class PlaybackEngine:
             # Spawn a daemon thread per unique cache path
             t = threading.Thread(
                 target=self._generate_sentence,
-                args=(idx,),
+                args=(idx - 1,),
                 daemon=True,
-                name=f"gen-{idx}",
+                name=f"gen-{idx - 1}",
             )
             t.start()
 

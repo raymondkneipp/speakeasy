@@ -21,9 +21,12 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
+import soundfile as sf
+
 
 DEFAULT_VOICE_DIR = Path.home() / ".local" / "share" / "piper"
-DEFAULT_VOICE_NAME = "en_US-lessac-medium"
+DEFAULT_VOICE_NAME = "en_US-amy-medium"
 
 
 def default_voice_path() -> Optional[Path]:
@@ -86,7 +89,7 @@ def synthesize(
         "--model", str(voice_path),
         "--output_file", str(out_path),
         "--length_scale", f"{length_scale:.4f}",
-        "--sentence_silence", "0.3",   # short pause between sentences
+        "--sentence_silence", "0.1",
     ]
 
     try:
@@ -98,8 +101,31 @@ def synthesize(
         )
         if result.returncode != 0:
             return False
-        return out_path.exists() and out_path.stat().st_size > 0
+        if not (out_path.exists() and out_path.stat().st_size > 0):
+            return False
+        _trim_trailing_silence(out_path)
+        return True
     except subprocess.TimeoutExpired:
         return False
     except Exception:
         return False
+
+
+def _trim_trailing_silence(path: Path, threshold_db: float = -45, keep_ms: int = 50) -> None:
+    """
+    Remove trailing silence from a WAV file in-place.
+    Keeps `keep_ms` milliseconds after the last loud sample so the
+    speech doesn't feel clipped.
+    """
+    try:
+        data, sr = sf.read(str(path), dtype="float32")
+        threshold = 10 ** (threshold_db / 20)
+        energy = np.abs(data).max(axis=1) if data.ndim > 1 else np.abs(data)
+        nonsilent = np.where(energy > threshold)[0]
+        if len(nonsilent) == 0:
+            return
+        keep_samples = int(sr * keep_ms / 1000)
+        end = min(len(data), nonsilent[-1] + keep_samples)
+        sf.write(str(path), data[:end], sr)
+    except Exception:
+        pass
