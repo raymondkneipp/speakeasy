@@ -78,6 +78,11 @@ class PlaybackEngine:
         self._gen_requested: set[Path] = set()
         self._gen_lock = threading.Lock()
 
+        # Cancel events for in-flight generation threads, keyed by cache path.
+        self._cancel_events: dict[Path, threading.Event] = {}
+        # Debounce timer: fires _request_generation_ahead after a short pause.
+        self._gen_timer: Optional[threading.Timer] = None
+
     # ------------------------------------------------------------------ #
     # Public API (thread-safe)
     # ------------------------------------------------------------------ #
@@ -182,6 +187,7 @@ class PlaybackEngine:
 
     def _handle_command(self, cmd: str, payload) -> None:
         _do_gen = False
+        _debounce = False
         with self._lock:
             if cmd == CMD_PAUSE_RESUME:
                 self._paused = not self._paused
@@ -195,6 +201,7 @@ class PlaybackEngine:
                 self._interrupt_playback()
                 self.on_sentence_change(self._idx)
                 _do_gen = True
+                _debounce = True
 
             elif cmd == CMD_PREV:
                 new_idx = self._skip_breaks(max(self._idx - 1, 0), -1)
@@ -202,6 +209,7 @@ class PlaybackEngine:
                 self._interrupt_playback()
                 self.on_sentence_change(self._idx)
                 _do_gen = True
+                _debounce = True
 
             elif cmd == CMD_JUMP:
                 new_idx = self._skip_breaks(max(0, min(int(payload), len(self.sentences) - 1)), +1)
@@ -209,13 +217,17 @@ class PlaybackEngine:
                 self._interrupt_playback()
                 self.on_sentence_change(self._idx)
                 _do_gen = True
+                _debounce = True
 
             elif cmd == CMD_QUIT:
                 self._stopped = True
                 self._interrupt_playback()
 
         if _do_gen:
-            self._request_generation_ahead()
+            if _debounce:
+                self._schedule_generation()
+            else:
+                self._request_generation_ahead()
 
     def _interrupt_playback(self) -> None:
         """Stop PortAudio playback immediately."""
@@ -294,44 +306,69 @@ class PlaybackEngine:
             return True
         return is_cached(sent, self.voice, self.speed)
 
+    def _schedule_generation(self) -> None:
+        """Debounce TTS generation: wait 250 ms after the last nav command."""
+        with self._gen_lock:
+            if self._gen_timer is not None:
+                self._gen_timer.cancel()
+            t = threading.Timer(0.25, self._request_generation_ahead)
+            t.daemon = True
+            self._gen_timer = t
+        t.start()
+
     def _request_generation_ahead(self) -> None:
         """
         Kick off background TTS generation for current + next 5 sentences.
+        Cancels in-flight generation for sentences no longer in the window.
         Skips sentences already cached or already being generated.
-        Deduplicates by cache path so identical sentences don't race to write
-        the same file concurrently.
         """
+        with self._gen_lock:
+            self._gen_timer = None
+
         with self._lock:
             base = self._idx
 
+        # Build the desired lookahead window: (sent_idx, text, dest)
+        lookahead: list[tuple[int, str, Path]] = []
         generated = 0
         idx = base
         while generated < 6 and idx < len(self.sentences):
             text = self.sentences[idx]
+            if text != PARAGRAPH_BREAK:
+                generated += 1
+                dest = cache_path(text, self.voice, self.speed)
+                if not (dest.exists() and dest.stat().st_size > 0):
+                    lookahead.append((idx, text, dest))
             idx += 1
-            if text == PARAGRAPH_BREAK:
-                continue  # don't count breaks against the lookahead budget
 
-            generated += 1
-            dest = cache_path(text, self.voice, self.speed)
+        wanted = {dest for _, _, dest in lookahead}
 
+        # Cancel in-flight procs that are no longer in the window.
+        with self._gen_lock:
+            for path in list(self._cancel_events):
+                if path not in wanted:
+                    self._cancel_events[path].set()
+                    del self._cancel_events[path]
+                    self._gen_requested.discard(path)
+
+        # Spawn threads for paths not already generating.
+        for sent_idx, text, dest in lookahead:
             with self._gen_lock:
                 if dest in self._gen_requested:
                     continue
                 self._gen_requested.add(dest)
-                if dest.exists() and dest.stat().st_size > 0:
-                    continue
+                cancel = threading.Event()
+                self._cancel_events[dest] = cancel
 
-            # Spawn a daemon thread per unique cache path
             t = threading.Thread(
                 target=self._generate_sentence,
-                args=(idx - 1,),
+                args=(sent_idx, cancel),
                 daemon=True,
-                name=f"gen-{idx - 1}",
+                name=f"gen-{sent_idx}",
             )
             t.start()
 
-    def _generate_sentence(self, idx: int) -> None:
+    def _generate_sentence(self, idx: int, cancel_event: threading.Event) -> None:
         """Generate TTS for sentences[idx] and write atomically to cache."""
         text = self.sentences[idx]
         if text == PARAGRAPH_BREAK:
@@ -344,9 +381,16 @@ class PlaybackEngine:
         # partial write — even if two threads somehow target the same path.
         tmp = dest.with_suffix(".tmp")
         try:
-            ok = synthesize(text, tmp, voice_path=voice_path, speed=self.speed)
+            ok = synthesize(
+                text, tmp,
+                voice_path=voice_path,
+                speed=self.speed,
+                cancel_event=cancel_event,
+            )
             if ok and tmp.exists() and tmp.stat().st_size > 0:
                 tmp.replace(dest)
         finally:
             if tmp.exists():
                 tmp.unlink(missing_ok=True)
+            with self._gen_lock:
+                self._cancel_events.pop(dest, None)

@@ -18,6 +18,8 @@ Voice model files must be downloaded separately:
 import subprocess
 import shutil
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -40,6 +42,7 @@ def synthesize(
     out_path: Path,
     voice_path: Optional[Path] = None,
     speed: float = 1.0,
+    cancel_event: Optional[threading.Event] = None,
 ) -> bool:
     """
     Run Piper TTS to generate a WAV file at out_path.
@@ -93,20 +96,37 @@ def synthesize(
     ]
 
     try:
-        result = subprocess.run(
+        if cancel_event and cancel_event.is_set():
+            return False
+
+        proc = subprocess.Popen(
             cmd,
-            input=text.encode("utf-8"),
-            capture_output=True,
-            timeout=30,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
         )
-        if result.returncode != 0:
+        proc.stdin.write(text.encode("utf-8"))
+        proc.stdin.close()
+
+        # Poll so we can cancel if the caller sets cancel_event mid-generation.
+        deadline = time.monotonic() + 30
+        while proc.poll() is None:
+            if cancel_event and cancel_event.is_set():
+                proc.kill()
+                proc.wait()
+                return False
+            if time.monotonic() > deadline:
+                proc.kill()
+                proc.wait()
+                return False
+            time.sleep(0.05)
+
+        if proc.returncode != 0:
             return False
         if not (out_path.exists() and out_path.stat().st_size > 0):
             return False
         _trim_trailing_silence(out_path)
         return True
-    except subprocess.TimeoutExpired:
-        return False
     except Exception:
         return False
 
