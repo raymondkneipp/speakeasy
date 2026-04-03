@@ -104,6 +104,10 @@ class SpeakeasyUI:
         paused = self.engine.is_paused
 
         # Build the status line
+        playable_total = sum(1 for s in self.sentences if s != PARAGRAPH_BREAK)
+        playable_current = sum(1 for s in self.sentences[:idx + 1] if s != PARAGRAPH_BREAK)
+        pct = round(playable_current / playable_total * 100) if playable_total else 0
+
         status_parts = []
         if self.title:
             status_parts.append(f"[bold cyan]{self.title}[/bold cyan]")
@@ -111,7 +115,7 @@ class SpeakeasyUI:
             status_parts.append("[yellow]⏸ PAUSED[/yellow]")
         else:
             status_parts.append("[green]▶ PLAYING[/green]")
-        status_parts.append(f"[dim]{idx + 1}/{len(self.sentences)}[/dim]")
+        status_parts.append(f"[dim]{playable_current}/{playable_total}[/dim] [cyan]{pct}%[/cyan]")
         status_line = Text.from_markup("  ".join(status_parts))
 
         # Gather visible sentence windows
@@ -157,8 +161,12 @@ class SpeakeasyUI:
             prev_was_para = False
 
             if i == current_idx:
-                # Highlighted current sentence
-                t = Text(f"▶  {sent}", style="bold bright_white on dark_blue")
+                if not self.engine.is_ready(i):
+                    frame = int(time.time() * 10) % len(SPINNER_FRAMES)
+                    icon = SPINNER_FRAMES[frame]
+                else:
+                    icon = "▶"
+                t = Text(f"{icon}  {sent}", style="bold bright_white on dark_blue")
                 items.append(Align.left(t))
             elif i < current_idx:
                 items.append(Align.left(Text(sent, style="dim white")))

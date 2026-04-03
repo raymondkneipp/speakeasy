@@ -190,6 +190,73 @@ def cmd_start(args) -> None:
         _run_session(session, start_paused=args.rewrite)
 
 
+def cmd_load(args) -> None:
+    raw_text = _read_input(args)
+    if not raw_text or not raw_text.strip():
+        console.print("[red]No input text provided.[/red]")
+        console.print("Use: speakeasy load --file notes.txt OR pipe text in.")
+        sys.exit(1)
+
+    voice = _resolve_voice(args.voice)
+    speed = args.speed
+
+    # --- Rewrite ---
+    if args.rewrite:
+        token_count = 0
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[dim]Rewriting…[/dim]  [cyan]{task.fields[tokens]}[/cyan][dim] tokens[/dim]"),
+            TimeElapsedColumn(),
+            console=console,
+            transient=True,
+        ) as progress:
+            task = progress.add_task("rewrite", total=None, tokens=0)
+
+            def _on_token(t: str) -> None:
+                nonlocal token_count
+                token_count += 1
+                progress.update(task, tokens=token_count)
+
+            rewritten, err = rewrite_text(raw_text, on_token=_on_token)
+
+        if rewritten is None:
+            console.print(f"[yellow]Rewrite failed: {err}. Using original text.[/yellow]")
+            rewritten = None
+            active_text = raw_text
+        else:
+            console.print(f"[dim]Rewrite done ({token_count} tokens).[/dim]")
+            active_text = rewritten
+    else:
+        rewritten = None
+        active_text = raw_text
+
+    # --- Split into sentences ---
+    sentences = split_into_sentences(active_text)
+    if not sentences:
+        console.print("[red]No sentences found in input.[/red]")
+        sys.exit(1)
+
+    # --- Derive title from first sentence ---
+    first = next((s for s in sentences if s), "")
+    words = first.split()
+    title = " ".join(words[:8]) + ("…" if len(words) > 8 else "")
+
+    # --- Save session ---
+    init_db()
+    session = Session(
+        original=raw_text,
+        rewritten=rewritten,
+        sentences=sentences,
+        voice=voice,
+        speed=speed,
+        title=title,
+    )
+    session.save()
+
+    console.print(f"[dim]Loaded[/dim] [bold]{title}[/bold] [dim]({len(sentences)} sentences, id={session.session_id})[/dim]")
+
+
 # ------------------------------------------------------------------ #
 # Command: list
 # ------------------------------------------------------------------ #
@@ -218,8 +285,8 @@ def cmd_list(args) -> None:
     table.add_column("Created", style="dim")
 
     for r in rows:
-        total = r["sentence_count"] or 0
-        current = r["current_idx"] or 0
+        total = r["playable_total"] or 0
+        current = r["playable_current"] or 0
         table.add_row(
             str(r["session_id"]),
             r["title"] or "[dim]—[/dim]",
@@ -307,7 +374,8 @@ def _run_session(session: Session, start_paused: bool = False) -> None:
     sentences = session.sentences
     voice = session.voice
     speed = session.speed
-    start_idx = session.current_idx
+    # If session was completed, restart from beginning
+    start_idx = session.current_idx if session.current_idx < len(session.sentences) else 0
 
     # --- Engine ---
     engine = PlaybackEngine(
@@ -386,6 +454,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Debug mode: print each sentence and speak it directly, no UI",
     )
 
+    # --- load ---
+    p_load = sub.add_parser("load", help="Save text as a session without playing")
+    p_load.add_argument("--text", "-t", help="Text to load")
+    p_load.add_argument("--file", "-f", help="Path to text file")
+    p_load.add_argument("--rewrite", "-r", action="store_true", help="Rewrite with Ollama before saving")
+    p_load.add_argument("--speed", "-s", type=float, default=1.0, metavar="FLOAT", help="Playback speed (default 1.0)")
+    p_load.add_argument("--voice", "-v", help="Path to Piper .onnx voice model")
+
     # --- list ---
     sub.add_parser("list", help="List saved sessions")
 
@@ -417,6 +493,8 @@ def main() -> None:
 
     if args.command == "start":
         cmd_start(args)
+    elif args.command == "load":
+        cmd_load(args)
     elif args.command == "list":
         cmd_list(args)
     elif args.command == "cache":

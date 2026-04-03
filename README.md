@@ -91,6 +91,26 @@ speakeasy start --file notes.txt --rewrite
 
 ---
 
+### `load` — save text without playing
+
+```bash
+speakeasy load --file article.txt
+cat notes.txt | speakeasy load
+speakeasy load --file draft.txt --rewrite --speed 1.3
+```
+
+Saves the text as a session and prints the ID, then exits immediately. Use `speakeasy resume <id>` when ready to listen. Useful for batch-loading files from scripts or AI tools.
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--text` | `-t` | — | Text to load (inline) |
+| `--file` | `-f` | — | Path to a text file |
+| `--speed` | `-s` | `1.0` | Speed to use when resumed |
+| `--voice` | `-v` | auto | Path to a Piper `.onnx` model file |
+| `--rewrite` | `-r` | off | Rewrite with Ollama before saving |
+
+---
+
 ### `list` — show saved sessions
 
 ```bash

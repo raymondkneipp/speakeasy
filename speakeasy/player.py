@@ -110,6 +110,9 @@ class PlaybackEngine:
                     break
                 idx = self._idx
                 paused = self._paused
+                if idx >= len(self.sentences):
+                    self._stopped = True
+                    break
 
             # --- Process any pending commands (non-blocking) ---
             try:
@@ -153,6 +156,7 @@ class PlaybackEngine:
                 if not self._paused and not self._stopped:
                     next_idx = self._idx + 1
                     if next_idx >= len(self.sentences):
+                        self._idx = next_idx  # mark fully complete → 100%
                         self._stopped = True
                         break
                     self._idx = next_idx

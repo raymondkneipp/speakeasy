@@ -123,11 +123,19 @@ def delete_session(session_id: int) -> bool:
 
 
 def list_sessions() -> list[dict]:
+    from .constants import PARAGRAPH_BREAK
     with _get_conn() as conn:
         rows = conn.execute(
-            """SELECT session_id, title, current_idx,
-                      json_array_length(sentences) AS sentence_count,
-                      created_at, updated_at
-               FROM sessions ORDER BY session_id DESC"""
+            "SELECT session_id, title, current_idx, sentences, created_at FROM sessions ORDER BY session_id DESC"
         ).fetchall()
-    return [dict(r) for r in rows]
+    result = []
+    for row in rows:
+        d = dict(row)
+        sentences = json.loads(d.pop("sentences"))
+        current_idx = d["current_idx"]
+        playable_total = sum(1 for s in sentences if s != PARAGRAPH_BREAK)
+        playable_current = sum(1 for s in sentences[:current_idx] if s != PARAGRAPH_BREAK)
+        d["playable_total"] = playable_total
+        d["playable_current"] = min(playable_current, playable_total)
+        result.append(d)
+    return result
